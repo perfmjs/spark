@@ -81,16 +81,18 @@ singleTableSchema
 
 statement
     : query                                                            #statementDefault
+    | ctes? dmlStatementNoWith                                         #dmlStatement
     | USE db=identifier                                                #use
     | CREATE database (IF NOT EXISTS)? identifier
-        (COMMENT comment=STRING)? locationSpec?
-        (WITH DBPROPERTIES tablePropertyList)?                         #createDatabase
+        ((COMMENT comment=STRING) |
+         locationSpec |
+         (WITH DBPROPERTIES tablePropertyList))*                       #createDatabase
     | ALTER database identifier SET DBPROPERTIES tablePropertyList     #setDatabaseProperties
     | DROP database (IF EXISTS)? identifier (RESTRICT | CASCADE)?      #dropDatabase
     | SHOW DATABASES (LIKE? pattern=STRING)?                           #showDatabases
     | createTableHeader ('(' colTypeList ')')? tableProvider
         ((OPTIONS options=tablePropertyList) |
-        (PARTITIONED BY partitionColumnNames=identifierList) |
+        (PARTITIONED BY partitioning=transformList) |
         bucketSpec |
         locationSpec |
         (COMMENT comment=STRING) |
@@ -111,14 +113,27 @@ statement
         LIKE source=tableIdentifier locationSpec?                      #createTableLike
     | ANALYZE TABLE tableIdentifier partitionSpec? COMPUTE STATISTICS
         (identifier | FOR COLUMNS identifierSeq | FOR ALL COLUMNS)?    #analyze
-    | ALTER TABLE tableIdentifier
-        ADD COLUMNS '(' columns=colTypeList ')'                        #addTableColumns
+    | ALTER TABLE multipartIdentifier
+        ADD (COLUMN | COLUMNS)
+        columns=qualifiedColTypeWithPositionList                       #addTableColumns
+    | ALTER TABLE multipartIdentifier
+        ADD (COLUMN | COLUMNS)
+        '(' columns=qualifiedColTypeWithPositionList ')'               #addTableColumns
+    | ALTER TABLE multipartIdentifier
+        RENAME COLUMN from=qualifiedName TO to=identifier              #renameTableColumn
+    | ALTER TABLE multipartIdentifier
+        DROP (COLUMN | COLUMNS) '(' columns=qualifiedNameList ')'      #dropTableColumns
+    | ALTER TABLE multipartIdentifier
+        DROP (COLUMN | COLUMNS) columns=qualifiedNameList              #dropTableColumns
     | ALTER (TABLE | VIEW) from=tableIdentifier
         RENAME TO to=tableIdentifier                                   #renameTable
-    | ALTER (TABLE | VIEW) tableIdentifier
+    | ALTER (TABLE | VIEW) multipartIdentifier
         SET TBLPROPERTIES tablePropertyList                            #setTableProperties
-    | ALTER (TABLE | VIEW) tableIdentifier
+    | ALTER (TABLE | VIEW) multipartIdentifier
         UNSET TBLPROPERTIES (IF EXISTS)? tablePropertyList             #unsetTableProperties
+    | ALTER TABLE multipartIdentifier
+        (ALTER | CHANGE) COLUMN? qualifiedName
+        (TYPE dataType)? (COMMENT comment=STRING)? colPosition?        #alterTableColumn
     | ALTER TABLE tableIdentifier partitionSpec?
         CHANGE COLUMN? identifier colType colPosition?                 #changeColumn
     | ALTER TABLE tableIdentifier (partitionSpec)?
@@ -135,15 +150,18 @@ statement
         DROP (IF EXISTS)? partitionSpec (',' partitionSpec)* PURGE?    #dropTablePartitions
     | ALTER VIEW tableIdentifier
         DROP (IF EXISTS)? partitionSpec (',' partitionSpec)*           #dropTablePartitions
-    | ALTER TABLE tableIdentifier partitionSpec? SET locationSpec      #setTableLocation
+    | ALTER TABLE multipartIdentifier SET locationSpec                 #setTableLocation
+    | ALTER TABLE tableIdentifier partitionSpec SET locationSpec       #setPartitionLocation
     | ALTER TABLE tableIdentifier RECOVER PARTITIONS                   #recoverPartitions
-    | DROP TABLE (IF EXISTS)? tableIdentifier PURGE?                   #dropTable
-    | DROP VIEW (IF EXISTS)? tableIdentifier                           #dropTable
+    | DROP TABLE (IF EXISTS)? multipartIdentifier PURGE?               #dropTable
+    | DROP VIEW (IF EXISTS)? multipartIdentifier                       #dropView
     | CREATE (OR REPLACE)? (GLOBAL? TEMPORARY)?
         VIEW (IF NOT EXISTS)? tableIdentifier
-        identifierCommentList? (COMMENT STRING)?
-        (PARTITIONED ON identifierList)?
-        (TBLPROPERTIES tablePropertyList)? AS query                    #createView
+        identifierCommentList?
+        ((COMMENT STRING) |
+         (PARTITIONED ON identifierList) |
+         (TBLPROPERTIES tablePropertyList))*
+        AS query                                                       #createView
     | CREATE (OR REPLACE)? GLOBAL? TEMPORARY VIEW
         tableIdentifier ('(' colTypeList ')')? tableProvider
         (OPTIONS tablePropertyList)?                                   #createTempViewUsing
@@ -170,7 +188,7 @@ statement
     | (DESC | DESCRIBE) database EXTENDED? identifier                  #describeDatabase
     | (DESC | DESCRIBE) TABLE? option=(EXTENDED | FORMATTED)?
         tableIdentifier partitionSpec? describeColName?                #describeTable
-    | (DESC | DESCRIBE) QUERY? queryToDesc                             #describeQuery
+    | (DESC | DESCRIBE) QUERY? query                                   #describeQuery
     | REFRESH TABLE tableIdentifier                                    #refreshTable
     | REFRESH (STRING | .*?)                                           #refreshResource
     | CACHE LAZY? TABLE tableIdentifier
@@ -237,7 +255,7 @@ unsupportedHiveNativeCommands
     ;
 
 createTableHeader
-    : CREATE TEMPORARY? EXTERNAL? TABLE (IF NOT EXISTS)? tableIdentifier
+    : CREATE TEMPORARY? EXTERNAL? TABLE (IF NOT EXISTS)? multipartIdentifier
     ;
 
 bucketSpec
@@ -258,10 +276,6 @@ locationSpec
 
 query
     : ctes? queryNoWith
-    ;
-
-queryToDesc
-    : queryTerm queryOrganization
     ;
 
 insertInto
@@ -305,7 +319,7 @@ ctes
     ;
 
 namedQuery
-    : name=identifier AS? '(' query ')'
+    : name=identifier (columnAliases=identifierList)? AS? '(' query ')'
     ;
 
 tableProvider
@@ -358,9 +372,13 @@ resource
     : identifier STRING
     ;
 
+dmlStatementNoWith
+    : insertInto queryTerm queryOrganization                                       #singleInsertQuery
+    | fromClause multiInsertQueryBody+                                             #multiInsertQuery
+    ;
+
 queryNoWith
-    : insertInto? queryTerm queryOrganization                                              #singleInsertQuery
-    | fromClause multiInsertQueryBody+                                                     #multiInsertQuery
+    : queryTerm queryOrganization
     ;
 
 queryOrganization
@@ -368,14 +386,12 @@ queryOrganization
       (CLUSTER BY clusterBy+=expression (',' clusterBy+=expression)*)?
       (DISTRIBUTE BY distributeBy+=expression (',' distributeBy+=expression)*)?
       (SORT BY sort+=sortItem (',' sort+=sortItem)*)?
-      windows?
+      windowClause?
       (LIMIT (ALL | limit=expression))?
     ;
 
 multiInsertQueryBody
-    : insertInto?
-      querySpecification
-      queryOrganization
+    : insertInto fromStatementBody
     ;
 
 queryTerm
@@ -390,7 +406,8 @@ queryTerm
 
 queryPrimary
     : querySpecification                                                    #queryPrimaryDefault
-    | TABLE tableIdentifier                                                 #table
+    | fromStatement                                                         #fromStmt
+    | TABLE multipartIdentifier                                             #table
     | inlineTable                                                           #inlineTableDefault1
     | '(' queryNoWith  ')'                                                  #subquery
     ;
@@ -399,25 +416,58 @@ sortItem
     : expression ordering=(ASC | DESC)? (NULLS nullOrder=(LAST | FIRST))?
     ;
 
+fromStatement
+    : fromClause fromStatementBody+
+    ;
+
+fromStatementBody
+    : transformClause
+      whereClause?
+      queryOrganization
+    | selectClause
+      lateralView*
+      whereClause?
+      aggregationClause?
+      havingClause?
+      windowClause?
+      queryOrganization
+    ;
+
 querySpecification
-    : (((SELECT kind=TRANSFORM '(' namedExpressionSeq ')'
-        | kind=MAP namedExpressionSeq
-        | kind=REDUCE namedExpressionSeq))
-       inRowFormat=rowFormat?
-       (RECORDWRITER recordWriter=STRING)?
-       USING script=STRING
-       (AS (identifierSeq | colTypeList | ('(' (identifierSeq | colTypeList) ')')))?
-       outRowFormat=rowFormat?
-       (RECORDREADER recordReader=STRING)?
-       fromClause?
-       (WHERE where=booleanExpression)?)
-    | ((kind=SELECT (hints+=hint)* setQuantifier? namedExpressionSeq fromClause?
-       | fromClause (kind=SELECT setQuantifier? namedExpressionSeq)?)
-       lateralView*
-       (WHERE where=booleanExpression)?
-       aggregation?
-       (HAVING having=booleanExpression)?
-       windows?)
+    : transformClause
+      fromClause?
+      whereClause?                                                          #transformQuerySpecification
+    | selectClause
+      fromClause?
+      lateralView*
+      whereClause?
+      aggregationClause?
+      havingClause?
+      windowClause?                                                         #regularQuerySpecification
+    ;
+
+transformClause
+    : (SELECT kind=TRANSFORM '(' namedExpressionSeq ')'
+            | kind=MAP namedExpressionSeq
+            | kind=REDUCE namedExpressionSeq)
+      inRowFormat=rowFormat?
+      (RECORDWRITER recordWriter=STRING)?
+      USING script=STRING
+      (AS (identifierSeq | colTypeList | ('(' (identifierSeq | colTypeList) ')')))?
+      outRowFormat=rowFormat?
+      (RECORDREADER recordReader=STRING)?
+    ;
+
+selectClause
+    : SELECT (hints+=hint)* setQuantifier? namedExpressionSeq
+    ;
+
+whereClause
+    : WHERE booleanExpression
+    ;
+
+havingClause
+    : HAVING booleanExpression
     ;
 
 hint
@@ -433,7 +483,7 @@ fromClause
     : FROM relation (',' relation)* lateralView* pivotClause?
     ;
 
-aggregation
+aggregationClause
     : GROUP BY groupingExpressions+=expression (',' groupingExpressions+=expression)* (
       WITH kind=ROLLUP
     | WITH kind=CUBE
@@ -529,7 +579,7 @@ identifierComment
     ;
 
 relationPrimary
-    : tableIdentifier sample? tableAlias      #tableName
+    : multipartIdentifier sample? tableAlias  #tableName
     | '(' queryNoWith ')' sample? tableAlias  #aliasedQuery
     | '(' relation ')' sample? tableAlias     #aliasedRelation
     | inlineTable                             #inlineTableDefault2
@@ -576,6 +626,21 @@ namedExpression
 
 namedExpressionSeq
     : namedExpression (',' namedExpression)*
+    ;
+
+transformList
+    : '(' transforms+=transform (',' transforms+=transform)* ')'
+    ;
+
+transform
+    : qualifiedName                                                           #identityTransform
+    | transformName=identifier
+      '(' argument+=transformArgument (',' argument+=transformArgument)* ')'  #applyTransform
+    ;
+
+transformArgument
+    : qualifiedName
+    | constant
     ;
 
 expression
@@ -626,7 +691,7 @@ primaryExpression
     | '(' query ')'                                                                            #subqueryExpression
     | qualifiedName '(' (setQuantifier? argument+=expression (',' argument+=expression)*)? ')'
        (OVER windowSpec)?                                                                      #functionCall
-    | qualifiedName '(' trimOption=(BOTH | LEADING | TRAILING) argument+=expression
+    | qualifiedName '(' trimOption=(BOTH | LEADING | TRAILING) (argument+=expression)?
       FROM argument+=expression ')'                                                            #functionCall
     | IDENTIFIER '->' expression                                                               #lambda
     | '(' IDENTIFIER (',' IDENTIFIER)+ ')' '->' expression                                     #lambda
@@ -635,6 +700,8 @@ primaryExpression
     | base=primaryExpression '.' fieldName=identifier                                          #dereference
     | '(' expression ')'                                                                       #parenthesizedExpression
     | EXTRACT '(' field=identifier FROM source=valueExpression ')'                             #extract
+    | (SUBSTR | SUBSTRING) '(' str=valueExpression (FROM | ',') pos=valueExpression
+      ((FOR | ',') len=valueExpression)? ')'                                                   #substring
     ;
 
 constant
@@ -698,7 +765,7 @@ intervalUnit
     ;
 
 colPosition
-    : FIRST | AFTER identifier
+    : FIRST | AFTER qualifiedName
     ;
 
 dataType
@@ -706,6 +773,14 @@ dataType
     | complex=MAP '<' dataType ',' dataType '>'                 #complexDataType
     | complex=STRUCT ('<' complexColTypeList? '>' | NEQ)        #complexDataType
     | identifier ('(' INTEGER_VALUE (',' INTEGER_VALUE)* ')')?  #primitiveDataType
+    ;
+
+qualifiedColTypeWithPositionList
+    : qualifiedColTypeWithPosition (',' qualifiedColTypeWithPosition)*
+    ;
+
+qualifiedColTypeWithPosition
+    : name=qualifiedName dataType (COMMENT comment=STRING)? colPosition?
     ;
 
 colTypeList
@@ -728,7 +803,7 @@ whenClause
     : WHEN condition=expression THEN result=expression
     ;
 
-windows
+windowClause
     : WINDOW namedWindow (',' namedWindow)*
     ;
 
@@ -758,6 +833,10 @@ frameBound
     : UNBOUNDED boundType=(PRECEDING | FOLLOWING)
     | boundType=CURRENT ROW
     | expression boundType=(PRECEDING | FOLLOWING)
+    ;
+
+qualifiedNameList
+    : qualifiedName (',' qualifiedName)*
     ;
 
 qualifiedName
@@ -953,6 +1032,8 @@ ansiNonReserved
     | STORED
     | STRATIFY
     | STRUCT
+    | SUBSTR
+    | SUBSTRING
     | TABLES
     | TABLESAMPLE
     | TBLPROPERTIES
@@ -1207,6 +1288,8 @@ nonReserved
     | STORED
     | STRATIFY
     | STRUCT
+    | SUBSTR
+    | SUBSTRING
     | TABLE
     | TABLES
     | TABLESAMPLE
@@ -1222,6 +1305,7 @@ nonReserved
     | TRANSFORM
     | TRUE
     | TRUNCATE
+    | TYPE
     | UNARCHIVE
     | UNBOUNDED
     | UNCACHE
@@ -1462,6 +1546,8 @@ STATISTICS: 'STATISTICS';
 STORED: 'STORED';
 STRATIFY: 'STRATIFY';
 STRUCT: 'STRUCT';
+SUBSTR: 'SUBSTR';
+SUBSTRING: 'SUBSTRING';
 TABLE: 'TABLE';
 TABLES: 'TABLES';
 TABLESAMPLE: 'TABLESAMPLE';
@@ -1477,6 +1563,7 @@ TRANSACTIONS: 'TRANSACTIONS';
 TRANSFORM: 'TRANSFORM';
 TRUE: 'TRUE';
 TRUNCATE: 'TRUNCATE';
+TYPE: 'TYPE';
 UNARCHIVE: 'UNARCHIVE';
 UNBOUNDED: 'UNBOUNDED';
 UNCACHE: 'UNCACHE';

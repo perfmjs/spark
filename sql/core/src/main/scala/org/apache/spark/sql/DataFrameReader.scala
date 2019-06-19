@@ -98,6 +98,9 @@ class DataFrameReader private[sql](sparkSession: SparkSession) extends Logging {
    * <ul>
    * <li>`timeZone` (default session local timezone): sets the string that indicates a timezone
    * to be used to parse timestamps in the JSON/CSV datasources or partition values.</li>
+   * <li>`pathGlobFilter`: an optional glob pattern to only include files with paths matching
+   * the pattern. The syntax follows <code>org.apache.hadoop.fs.GlobFilter</code>.
+   * It does not change the behavior of partition discovery.</li>
    * </ul>
    *
    * @since 1.4.0
@@ -135,6 +138,9 @@ class DataFrameReader private[sql](sparkSession: SparkSession) extends Logging {
    * <ul>
    * <li>`timeZone` (default session local timezone): sets the string that indicates a timezone
    * to be used to parse timestamps in the JSON/CSV datasources or partition values.</li>
+   * <li>`pathGlobFilter`: an optional glob pattern to only include files with paths matching
+   * the pattern. The syntax follows <code>org.apache.hadoop.fs.GlobFilter</code>.
+   * It does not change the behavior of partition discovery.</li>
    * </ul>
    *
    * @since 1.4.0
@@ -151,6 +157,9 @@ class DataFrameReader private[sql](sparkSession: SparkSession) extends Logging {
    * <ul>
    * <li>`timeZone` (default session local timezone): sets the string that indicates a timezone
    * to be used to parse timestamps in the JSON/CSV datasources or partition values.</li>
+   * <li>`pathGlobFilter`: an optional glob pattern to only include files with paths matching
+   * the pattern. The syntax follows <code>org.apache.hadoop.fs.GlobFilter</code>.
+   * It does not change the behavior of partition discovery.</li>
    * </ul>
    *
    * @since 1.4.0
@@ -195,12 +204,12 @@ class DataFrameReader private[sql](sparkSession: SparkSession) extends Logging {
     }
 
     val useV1Sources =
-      sparkSession.sessionState.conf.userV1SourceReaderList.toLowerCase(Locale.ROOT).split(",")
+      sparkSession.sessionState.conf.useV1SourceReaderList.toLowerCase(Locale.ROOT).split(",")
     val lookupCls = DataSource.lookupDataSource(source, sparkSession.sessionState.conf)
     val cls = lookupCls.newInstance() match {
       case f: FileDataSourceV2 if useV1Sources.contains(f.shortName()) ||
         useV1Sources.contains(lookupCls.getCanonicalName.toLowerCase(Locale.ROOT)) =>
-        f.fallBackFileFormat
+        f.fallbackFileFormat
       case _ => lookupCls
     }
 
@@ -618,7 +627,10 @@ class DataFrameReader private[sql](sparkSession: SparkSession) extends Logging {
    * <li>`maxCharsPerColumn` (default `-1`): defines the maximum number of characters allowed
    * for any given value being read. By default, it is -1 meaning unlimited length</li>
    * <li>`mode` (default `PERMISSIVE`): allows a mode for dealing with corrupt records
-   *    during parsing. It supports the following case-insensitive modes.
+   *    during parsing. It supports the following case-insensitive modes. Note that Spark tries
+   *    to parse only required columns in CSV under column pruning. Therefore, corrupt records
+   *    can be different based on required set of fields. This behavior can be controlled by
+   *    `spark.sql.csv.parser.columnPruning.enabled` (enabled by default).
    *   <ul>
    *     <li>`PERMISSIVE` : when it meets a corrupted record, puts the malformed string into a
    *     field configured by `columnNameOfCorruptRecord`, and sets malformed fields to `null`.
@@ -679,7 +691,6 @@ class DataFrameReader private[sql](sparkSession: SparkSession) extends Logging {
    *
    * @param path input path
    * @since 1.5.0
-   * @note Currently, this method can only be used after enabling Hive support.
    */
   def orc(path: String): DataFrame = {
     // This method ensures that calls that explicit need single argument works, see SPARK-16009
@@ -691,7 +702,6 @@ class DataFrameReader private[sql](sparkSession: SparkSession) extends Logging {
    *
    * @param paths input paths
    * @since 2.0.0
-   * @note Currently, this method can only be used after enabling Hive support.
    */
   @scala.annotation.varargs
   def orc(paths: String*): DataFrame = format("orc").load(paths: _*)

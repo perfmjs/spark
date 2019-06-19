@@ -21,7 +21,6 @@ import java.io.{ByteArrayInputStream, ByteArrayOutputStream}
 import java.lang.invoke.SerializedLambda
 
 import scala.collection.mutable.{Map, Set, Stack}
-import scala.language.existentials
 
 import org.apache.xbean.asm7.{ClassReader, ClassVisitor, MethodVisitor, Type}
 import org.apache.xbean.asm7.Opcodes._
@@ -33,8 +32,6 @@ import org.apache.spark.internal.Logging
  * A cleaner that renders closures serializable if they can be done so safely.
  */
 private[spark] object ClosureCleaner extends Logging {
-
-  private val isScala2_11 = scala.util.Properties.versionString.contains("2.11")
 
   // Get an ASM class reader for a given class from the JAR that loaded it
   private[util] def getClassReader(cls: Class[_]): ClassReader = {
@@ -168,9 +165,6 @@ private[spark] object ClosureCleaner extends Logging {
    * @param closure the closure to check.
    */
   private def getSerializedLambda(closure: AnyRef): Option[SerializedLambda] = {
-    if (isScala2_11) {
-      return None
-    }
     val isClosureCandidate =
       closure.getClass.isSynthetic &&
         closure
@@ -314,7 +308,9 @@ private[spark] object ClosureCleaner extends Logging {
       var outerPairs: List[(Class[_], AnyRef)] = outerClasses.zip(outerObjects).reverse
       var parent: AnyRef = null
       if (outerPairs.nonEmpty) {
-        val (outermostClass, outermostObject) = outerPairs.head
+        val outermostClass = outerPairs.head._1
+        val outermostObject = outerPairs.head._2
+
         if (isClosure(outermostClass)) {
           logDebug(s" + outermost object is a closure, so we clone it: ${outermostClass}")
         } else if (outermostClass.getName.startsWith("$line")) {

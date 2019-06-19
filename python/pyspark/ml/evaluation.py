@@ -27,7 +27,8 @@ from pyspark.ml.common import inherit_doc
 from pyspark.ml.util import JavaMLReadable, JavaMLWritable
 
 __all__ = ['Evaluator', 'BinaryClassificationEvaluator', 'RegressionEvaluator',
-           'MulticlassClassificationEvaluator', 'ClusteringEvaluator']
+           'MulticlassClassificationEvaluator', 'MultilabelClassificationEvaluator',
+           'ClusteringEvaluator']
 
 
 @inherit_doc
@@ -190,13 +191,13 @@ class BinaryClassificationEvaluator(JavaEvaluator, HasLabelCol, HasRawPrediction
 
 
 @inherit_doc
-class RegressionEvaluator(JavaEvaluator, HasLabelCol, HasPredictionCol,
+class RegressionEvaluator(JavaEvaluator, HasLabelCol, HasPredictionCol, HasWeightCol,
                           JavaMLReadable, JavaMLWritable):
     """
     .. note:: Experimental
 
-    Evaluator for Regression, which expects two input
-    columns: prediction and label.
+    Evaluator for Regression, which expects input columns prediction, label
+    and an optional weight column.
 
     >>> scoreAndLabels = [(-28.98343821, -27.0), (20.21491975, 21.5),
     ...   (-25.98418959, -22.0), (30.69731842, 33.0), (74.69283752, 71.0)]
@@ -214,6 +215,13 @@ class RegressionEvaluator(JavaEvaluator, HasLabelCol, HasPredictionCol,
     >>> evaluator2 = RegressionEvaluator.load(re_path)
     >>> str(evaluator2.getPredictionCol())
     'raw'
+    >>> scoreAndLabelsAndWeight = [(-28.98343821, -27.0, 1.0), (20.21491975, 21.5, 0.8),
+    ...   (-25.98418959, -22.0, 1.0), (30.69731842, 33.0, 0.6), (74.69283752, 71.0, 0.2)]
+    >>> dataset = spark.createDataFrame(scoreAndLabelsAndWeight, ["raw", "label", "weight"])
+    ...
+    >>> evaluator = RegressionEvaluator(predictionCol="raw", weightCol="weight")
+    >>> evaluator.evaluate(dataset)
+    2.740...
 
     .. versionadded:: 1.4.0
     """
@@ -227,10 +235,10 @@ class RegressionEvaluator(JavaEvaluator, HasLabelCol, HasPredictionCol,
 
     @keyword_only
     def __init__(self, predictionCol="prediction", labelCol="label",
-                 metricName="rmse"):
+                 metricName="rmse", weightCol=None):
         """
         __init__(self, predictionCol="prediction", labelCol="label", \
-                 metricName="rmse")
+                 metricName="rmse", weightCol=None)
         """
         super(RegressionEvaluator, self).__init__()
         self._java_obj = self._new_java_obj(
@@ -256,10 +264,10 @@ class RegressionEvaluator(JavaEvaluator, HasLabelCol, HasPredictionCol,
     @keyword_only
     @since("1.4.0")
     def setParams(self, predictionCol="prediction", labelCol="label",
-                  metricName="rmse"):
+                  metricName="rmse", weightCol=None):
         """
         setParams(self, predictionCol="prediction", labelCol="label", \
-                  metricName="rmse")
+                  metricName="rmse", weightCol=None)
         Sets params for regression evaluator.
         """
         kwargs = self._input_kwargs
@@ -344,6 +352,100 @@ class MulticlassClassificationEvaluator(JavaEvaluator, HasLabelCol, HasPredictio
         setParams(self, predictionCol="prediction", labelCol="label", \
                   metricName="f1", weightCol=None)
         Sets params for multiclass classification evaluator.
+        """
+        kwargs = self._input_kwargs
+        return self._set(**kwargs)
+
+
+@inherit_doc
+class MultilabelClassificationEvaluator(JavaEvaluator, HasLabelCol, HasPredictionCol,
+                                        JavaMLReadable, JavaMLWritable):
+    """
+    .. note:: Experimental
+
+    Evaluator for Multilabel Classification, which expects two input
+    columns: prediction and label.
+
+    >>> scoreAndLabels = [([0.0, 1.0], [0.0, 2.0]), ([0.0, 2.0], [0.0, 1.0]),
+    ...     ([], [0.0]), ([2.0], [2.0]), ([2.0, 0.0], [2.0, 0.0]),
+    ...     ([0.0, 1.0, 2.0], [0.0, 1.0]), ([1.0], [1.0, 2.0])]
+    >>> dataset = spark.createDataFrame(scoreAndLabels, ["prediction", "label"])
+    ...
+    >>> evaluator = MultilabelClassificationEvaluator(predictionCol="prediction")
+    >>> evaluator.evaluate(dataset)
+    0.63...
+    >>> evaluator.evaluate(dataset, {evaluator.metricName: "accuracy"})
+    0.54...
+    >>> mlce_path = temp_path + "/mlce"
+    >>> evaluator.save(mlce_path)
+    >>> evaluator2 = MultilabelClassificationEvaluator.load(mlce_path)
+    >>> str(evaluator2.getPredictionCol())
+    'prediction'
+
+    .. versionadded:: 3.0.0
+    """
+    metricName = Param(Params._dummy(), "metricName",
+                       "metric name in evaluation "
+                       "(subsetAccuracy|accuracy|hammingLoss|precision|recall|f1Measure|"
+                       "precisionByLabel|recallByLabel|f1MeasureByLabel|microPrecision|"
+                       "microRecall|microF1Measure)",
+                       typeConverter=TypeConverters.toString)
+    metricClass = Param(Params._dummy(), "metricClass",
+                        "The label whose metric will be computed in precisionByLabel|"
+                        "recallByLabel|f1MeasureByLabel. "
+                        "Must be >= 0. The default value is 0.",
+                        typeConverter=TypeConverters.toFloat)
+
+    @keyword_only
+    def __init__(self, predictionCol="prediction", labelCol="label",
+                 metricName="f1Measure", metricClass=0.0):
+        """
+        __init__(self, predictionCol="prediction", labelCol="label", \
+                 metricName="f1Measure", metricClass=0.0)
+        """
+        super(MultilabelClassificationEvaluator, self).__init__()
+        self._java_obj = self._new_java_obj(
+            "org.apache.spark.ml.evaluation.MultilabelClassificationEvaluator", self.uid)
+        self._setDefault(metricName="f1Measure", metricClass=0.0)
+        kwargs = self._input_kwargs
+        self._set(**kwargs)
+
+    @since("3.0.0")
+    def setMetricName(self, value):
+        """
+        Sets the value of :py:attr:`metricName`.
+        """
+        return self._set(metricName=value)
+
+    @since("3.0.0")
+    def getMetricName(self):
+        """
+        Gets the value of metricName or its default value.
+        """
+        return self.getOrDefault(self.metricName)
+
+    @since("3.0.0")
+    def setMetricClass(self, value):
+        """
+        Sets the value of :py:attr:`metricClass`.
+        """
+        return self._set(metricClass=value)
+
+    @since("3.0.0")
+    def getMetricClass(self):
+        """
+        Gets the value of metricClass or its default value.
+        """
+        return self.getOrDefault(self.metricClass)
+
+    @keyword_only
+    @since("3.0.0")
+    def setParams(self, predictionCol="prediction", labelCol="label",
+                  metricName="f1Measure", metricClass=0.0):
+        """
+        setParams(self, predictionCol="prediction", labelCol="label", \
+                  metricName="f1Measure", metricClass=0.0)
+        Sets params for multilabel classification evaluator.
         """
         kwargs = self._input_kwargs
         return self._set(**kwargs)
